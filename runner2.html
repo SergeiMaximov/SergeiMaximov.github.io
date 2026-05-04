@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>2D Runner — FIXED v2</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #222;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            height: auto;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            background: #111;
+            border: 2px solid #444;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            z-index: 10;
+        }
+        #gameOver, #levelUp {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+            z-index: 20;
+        }
+        button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #jumpBtn {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 80px;
+            height: 80px;
+            background: rgba(0, 150, 255, 0.6);
+            border-radius: 50%;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            color: white;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+            cursor: pointer;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="ui">
+            Уровень: <span id="level">1</span> | 
+            Счёт: <span id="score">0</span> | 
+            Жизни: <span id="lives">3</span>
+        </div>
+
+        <div id="gameOver">
+            <h2>Игра окончена!</h2>
+            <p>Финальный счёт: <span id="finalScore">0</span></p>
+            <button onclick="restartGame()">Играть снова</button>
+        </div>
+
+        <div id="levelUp">
+            <h2>Уровень <span id="nextLevel">2</span>!</h2>
+            <p>Скорость увеличена, препятствия сложнее!</p>
+            <button onclick="continueGame()">Продолжить</button>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+        <div id="jumpBtn">↑</div>
+    </div>
+
+    <script>
+        const container = document.getElementById('gameContainer');
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // 🔑 Динамический размер канвы
+        function resizeCanvas() {
+            const displayWidth = container.clientWidth;
+            const displayHeight = Math.round(displayWidth * 0.5); // Сохраняем пропорцию 800:400 = 2:1
+            canvas.width = 800;   // Виртуальный размер (логические пиксели)
+            canvas.height = 400;
+            
+            // Масштаб для отрисовки
+            const scaleX = displayWidth / 800;
+            const scaleY = displayHeight / 400;
+            canvas.style.width = `${displayWidth}px`;
+            canvas.style.height = `${displayHeight}px`;
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas(); // Инициализация
+
+        // Игрок — в логических координатах (800x400)
+        const player = {
+            x: 100,
+            y: 320, // 400 - 20 (земля) - 60 (высота) = 320
+            width: 40,
+            height: 60,
+            velY: 0,
+            jumpForce: -15,
+            gravity: 0.8,
+            onGround: true,
+            color: '#4CAF50'
+        };
+
+        // МОБИЛЬНАЯ КНОПКА
+        const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const jumpBtn = document.getElementById('jumpBtn');
+        if (isMobile) {
+            jumpBtn.style.display = 'flex';
+            const jump = () => {
+                if (player.onGround) {
+                    player.velY = player.jumpForce;
+                    player.onGround = false;
+                }
+            };
+            jumpBtn.addEventListener('touchstart', e => { e.preventDefault(); jump(); }, { passive: false });
+            jumpBtn.addEventListener('mousedown', e => { e.preventDefault(); jump(); });
+        }
+
+        // УПРАВЛЕНИЕ КЛАВИАТУРОЙ
+        document.addEventListener('keydown', e => {
+            if ((e.code === 'ArrowUp' || e.code === 'Space') && player.onGround) {
+                player.velY = player.jumpForce;
+                player.onGround = false;
+            }
+        });
+
+        let obstacles = [];
+        let score = 0;
+        let level = 1;
+        let lives = 999;
+        let gameOver = false;
+        let gamePaused = false;
+        let nextObstacleTime = 0;
+        let isLevelingUp = false;
+
+        const levelConfig = [
+            { speed: 5, types: ['ground', 'ground+ground'] },
+            { speed: 6, types: ['ground', 'slider', 'ground+ground', 'double', 'triple'] },
+            { speed: 7, types: ['ground', 'slider', 'double', 'ground+air', 'ground+ground', 'triple'] },
+            { speed: 8, types: ['double', 'slider', 'ground+air', 'ground+ground', 'pendulum'] },
+            { speed: 9, types: ['triple', 'air', 'ground+air', 'slider'] },
+            { speed: 10, types: ['ground+air', 'pendulum'] },
+            { speed: 11, types: ['ground+air', 'slider'] },
+            { speed: 12, types: ['pendulum', 'ground+air'] },
+            { speed: 13, types: ['slider', 'pendulum', 'ground+air'] },
+            { speed: 14, types: ['slider', 'pendulum', 'ground+air'] }
+        ];
+
+        function createObstacle(type) {
+            const groundY = 380; // 400 - 20
+
+            switch (type) {
+                case 'ground':
+                    return {
+                        x: 800,
+                        y: groundY - (20 + Math.random() * 40),
+                        width: 30 + Math.random() * 20,
+                        height: 20 + Math.random() * 40,
+                        type: 'ground',
+                        passed: false,
+                        color: '#E91E63'
+                    };
+
+               case 'slider':
+                    const startX = player.x + 400 + Math.random() * 200;
+                    return {
+                        x: startX,
+                        y: groundY - 55,
+                        width: 50,
+                        height: 35,
+                        type: 'slider',
+                        passed: false,
+                        color: '#009688',
+                        speed: 4 + level * 0.3
+                    };
+
+                case 'pendulum':
+                    return {
+                        x: 800,
+                        y: groundY - 120,
+                        width: 40,
+                        height: 40,
+                        type: 'pendulum',
+                        passed: false,
+                        color: '#673AB7',
+                        angle: 0,
+                        angularVel: 0.15
+                    };
+
+                case 'air':
+                    return {
+                        x: 800,
+                        y: 150 + Math.random() * 200,
+                        width: 30,
+                        height: 30,
+                        type: 'air',
+                        passed: false,
+                        color: '#f00cbe',
+                        vx: -5 - Math.random() * 1.5
+                    };
+
+                case 'double':
+                    return {
+                        x: 800,
+                        y: groundY - 60,
+                        width: 30,
+                        height: 60,
+                        type: 'double',
+                        parts: [
+                            { dx: 0, dy: 0 },
+                            { dx: 40, dy: -30 }
+                        ],
+                        passed: false,
+                        color: '#FF9800'
+                    };
+
+                case 'triple':
+                    return {
+                        x: 800,
+                        y: groundY - 30,
+                        width: 10,
+                        height: 30,
+                        type: 'triple',
+                        parts: [
+                            { dx: 0, dy: 0 },
+                            { dx: 30, dy: -10 },
+                            { dx: 60, dy: -20 }
+                        ],
+                        passed: false,
+                        color: '#9C27B0'
+                    };
+
+                case 'spike':
+                    return {
+                        x: 800,
+                        y: groundY - 40,
+                        width: 20,
+                        height: 40,
+                        type: 'spike',
+                        passed: false,
+                        color: '#F44336',
+                        spike: true
+                    };
+
+                case 'moving':
+                    return {
+                        x: 800,
+                        y: 200,
+                        width: 30,
+                        height: 100,
+                        type: 'moving',
+                        passed: false,
+                        color: '#00BCD4',
+                        vy: 5,
+                        originalY: 200
+                    };
+
+                case 'ground+ground':
+                    const obs1 = createObstacle('ground');
+                    obs1.x = 800;
+                    const gap = 150 + Math.random() * 80;
+                    const obs2 = createObstacle('ground');
+                    obs2.x = 800 + obs1.width + gap;
+                    return { type: 'group', items: [obs1, obs2] };
+
+                case 'ground+air':
+                    const g = createObstacle('ground');
+                    g.x = 800;
+                    const a = createObstacle('air');
+                    a.x = 800 + g.width * 0.3;
+                    a.y = g.y - 80 - Math.random() * 30;
+                    a.vx = -1.3;
+                    return { type: 'group', items: [g, a] };
+
+                default:
+                    return createObstacle('ground');
+            }
+        }
+
+        function updateObstacles() {
+            if (gameOver || gamePaused) return;
+
+            const cfg = levelConfig[level - 1] || levelConfig[levelConfig.length - 1];
+            const speed = cfg.speed;
+            const now = Date.now();
+
+            if (now > nextObstacleTime) {
+                const type = cfg.types[Math.floor(Math.random() * cfg.types.length)];
+                const obs = createObstacle(type);
+
+                if (obs.type === 'group') {
+                    obstacles.push(...obs.items);
+                } else {
+                    obstacles.push(obs);
+                }
+
+                const baseInterval = Math.max(800, 2200 - (level - 1) * 180);
+                nextObstacleTime = now + baseInterval * (0.7 + Math.random() * 0.5);
+            }
+
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                if (!obs) continue;
+
+                obs.x -= speed * 0.9;
+
+                if (obs.type === 'slider') {
+                    obs.x -= obs.speed;
+                }
+
+                if (obs.type === 'pendulum') {
+                    obs.angle += obs.angularVel;
+                    obs.y = (400 - 120) + Math.sin(obs.angle) * 85;
+                }
+                if (obs.type === 'moving') {
+                    obs.y += obs.vy;
+                    if (obs.y <= 120 || obs.y >= 280) obs.vy *= -1;
+                }
+                if (obs.type === 'flying') {
+                    obs.phase = (obs.phase || 0) + 0.05;
+                    obs.y = 180 + Math.sin(obs.phase) * 60;
+                    obs.x += (obs.vx || -0.8);
+                }
+                if (obs.type === 'air') {
+                    obs.x += (obs.vx || -1);
+                }
+
+                if (!obs.passed && obs.x + obs.width < player.x - 20) {
+                    obs.passed = true;
+                    score += 10 * level;
+                    document.getElementById('score').textContent = score;
+
+                    const scoreForNextLevel = 100 * level * (level + 1);
+                    if (!isLevelingUp && !gamePaused && score >= scoreForNextLevel && level < 10) {
+                        levelUp();
+                    }
+                }
+
+                if (obs.x + obs.width < -150) {
+                    obstacles.splice(i, 1);
+                    continue;
+                }
+
+                let collided = false;
+                if (obs.type === 'double' || obs.type === 'triple') {
+                    for (const part of obs.parts) {
+                        const px = obs.x + part.dx;
+                        const py = obs.y + part.dy;
+                        if (
+                            player.x < px + obs.width &&
+                            player.x + player.width > px &&
+                            player.y < py + obs.height &&
+                            player.y + player.height > py
+                        ) {
+                            collided = true;
+                            break;
+                        }
+                    }
+                } else {
+                    if (
+                        player.x < obs.x + obs.width &&
+                        player.x + player.width > obs.x &&
+                        player.y < obs.y + obs.height &&
+                        player.y + player.height > obs.y
+                    ) {
+                        collided = true;
+                    }
+                }
+
+                if (collided) {
+                    takeDamage();
+                    obstacles.splice(i, 1);
+                    continue;
+                }
+            }
+        }
+
+        function takeDamage() {
+            if (gameOver || gamePaused || isLevelingUp) return;
+            lives--;
+            document.getElementById('lives').textContent = lives;
+            if (lives <= 0) endGame();
+        }
+
+        function levelUp() {
+            if (gameOver || gamePaused || isLevelingUp) return;
+
+            isLevelingUp = true;
+            level++;
+            obstacles = [];
+            nextObstacleTime = Date.now() + 2500;
+
+            document.getElementById('level').textContent = level;
+            document.getElementById('nextLevel').textContent = level;
+            gamePaused = true;
+            document.getElementById('levelUp').style.display = 'block';
+
+            setTimeout(() => {
+                isLevelingUp = false;
+            }, 3000);
+
+            if (level >= 10) {
+                setTimeout(() => {
+                    if (!gameOver && gamePaused) {
+                        document.getElementById('levelUp').style.display = 'none';
+                        document.getElementById('gameOver').style.display = 'block';
+                        document.getElementById('finalScore').textContent = score;
+                        document.querySelector('#gameOver h2').textContent = '🏆 Победа!';
+                        gameOver = true;
+                    }
+                }, 1800);
+            }
+        }
+
+        function continueGame() {
+            if (gameOver || !gamePaused) return;
+            document.getElementById('levelUp').style.display = 'none';
+            setTimeout(() => {
+                gamePaused = false;
+                isLevelingUp = false;
+                player.onGround = (player.y >= 380 - player.height);
+            }, 120);
+        }
+
+        function endGame() {
+            if (gameOver) return;
+            gameOver = true;
+            document.getElementById('finalScore').textContent = score;
+            document.getElementById('gameOver').style.display = 'block';
+        }
+
+        function restartGame() {
+            player.y = 320;
+            player.velY = 0;
+            player.onGround = true;
+            obstacles = [];
+            score = 0;
+            level = 1;
+            lives = 999;
+            gameOver = false;
+            gamePaused = false;
+            isLevelingUp = false;
+            nextObstacleTime = Date.now() + 2000;
+
+            document.getElementById('score').textContent = score;
+            document.getElementById('level').textContent = level;
+            document.getElementById('lives').textContent = lives;
+            document.getElementById('gameOver').style.display = 'none';
+            document.getElementById('levelUp').style.display = 'none';
+        }
+
+        function draw() {
+            ctx.fillStyle = '#1E1E1E';
+            ctx.fillRect(0, 0, 800, 400);
+
+            ctx.fillStyle = '#444';
+            ctx.fillRect(0, 380, 800, 20);
+
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            obstacles.forEach(obs => {
+                if (!obs) return;
+                ctx.fillStyle = obs.color;
+
+                if (obs.type === 'double' || obs.type === 'triple') {
+                    obs.parts.forEach(part => {
+                        ctx.fillRect(
+                            obs.x + part.dx,
+                            obs.y + part.dy,
+                            obs.width,
+                            obs.height
+                        );
+                    });
+                } else {
+                    ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+                }
+
+                if (obs.spike) {
+                    ctx.beginPath();
+                    ctx.moveTo(obs.x, obs.y + obs.height);
+                    ctx.lineTo(obs.x + obs.width / 2, obs.y);
+                    ctx.lineTo(obs.x + obs.width, obs.y + obs.height);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            });
+        }
+
+        function updatePlayer() {
+            if (gameOver || gamePaused) return;
+
+            player.velY += player.gravity;
+            player.y += player.velY;
+
+            const groundY = 380 - player.height;
+            if (player.y >= groundY) {
+                player.y = groundY;
+                player.velY = 0;
+                player.onGround = true;
+            } else {
+                player.onGround = false;
+            }
+        }
+
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            const delta = timestamp - lastTime;
+            lastTime = timestamp;
+
+            if (!gameOver && !gamePaused) {
+                updatePlayer();
+                updateObstacles();
+                draw();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        restartGame();
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
