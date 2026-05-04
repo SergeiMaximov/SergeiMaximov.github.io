@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Гном — Runner</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #1a1a2e;
+            overflow: hidden;
+        }
+        canvas {
+            border: 2px solid #444;
+            background: #0f3460;
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        Счёт: <span id="score">0</span> | Жизни: <span id="lives">3</span>
+    </div>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Игрок
+        const player = {
+            x: 100,
+            y: 300,
+            width: 40,
+            height: 80,
+            velY: 0,
+            jumpForce: -14,
+            gravity: 0.8,
+            onGround: true,
+            runFrame: 0,
+            lastFrameTime: 0
+        };
+
+        // Управление
+        let isJumping = false;
+        document.addEventListener('touchstart', () => {
+            if (player.onGround) {
+                player.velY = player.jumpForce;
+                player.onGround = false;
+                isJumping = true;
+            }
+        });
+        document.addEventListener('keydown', e => {
+            if ((e.code === 'Space' || e.code === 'ArrowUp') && player.onGround) {
+                player.velY = player.jumpForce;
+                player.onGround = false;
+                isJumping = true;
+            }
+        });
+
+        // Гном — упрощённый, но узнаваемый
+        function drawGnome() {
+            const x = player.x;
+            const y = player.y;
+            const frame = player.runFrame;
+
+            // Тело (жилет)
+            ctx.fillStyle = '#6D4C41';
+            ctx.fillRect(x + 5, y + 20, 30, 40);
+
+            // Лицо
+            ctx.fillStyle = '#EFEBE9';
+            ctx.fillRect(x + 10, y + 5, 20, 15);
+
+            // Глаза
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x + 14, y + 10, 3, 3);
+            ctx.fillRect(x + 23, y + 10, 3, 3);
+
+            // Борода
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(x + 5, y + 20, 30, 10);
+
+            // Шляпа
+            ctx.fillStyle = '#5D4037';
+            ctx.fillRect(x, y, 40, 10);
+
+            // Ноги — анимация бега
+            ctx.fillStyle = '#4A148C';
+            if (!player.onGround) {
+                // Прыжок: ноги вместе
+                ctx.fillRect(x + 12, y + 60, 8, 25);
+                ctx.fillRect(x + 20, y + 60, 8, 25);
+            } else {
+                // Бег: смена положения ног
+                if (frame === 0) {
+                    ctx.fillRect(x + 10, y + 60, 8, 25); // левая назад
+                    ctx.fillRect(x + 22, y + 65, 8, 20); // правая вперёд
+                } else {
+                    ctx.fillRect(x + 10, y + 65, 8, 20); // левая вперёд
+                    ctx.fillRect(x + 22, y + 60, 8, 25); // правая назад
+                }
+            }
+
+            // Ботинки
+            ctx.fillStyle = '#000';
+            ctx.fillRect(x + 10, y + 85, 8, 5);
+            ctx.fillRect(x + 22, y + 85, 8, 5);
+        }
+
+        // Препятствия
+        let obstacles = [];
+        let score = 0;
+        let lives = 3;
+        let gameOver = false;
+        let nextObstacleTime = 0;
+
+        function createObstacle() {
+            return {
+                x: 800,
+                y: 320 - Math.random() * 60,
+                width: 30 + Math.random() * 20,
+                height: 20 + Math.random() * 40,
+                passed: false
+            };
+        }
+
+        // Основной цикл
+        function gameLoop(timestamp) {
+            if (gameOver) return;
+
+            // Фон
+            ctx.fillStyle = '#0f3460';
+            ctx.fillRect(0, 0, 800, 400);
+            ctx.fillStyle = '#5D4037';
+            ctx.fillRect(0, 350, 800, 50);
+
+            // Обновление игрока
+            player.velY += player.gravity;
+            player.y += player.velY;
+            if (player.y >= 300) {
+                player.y = 300;
+                player.velY = 0;
+                player.onGround = true;
+                isJumping = false;
+            }
+
+            // Анимация бега
+            if (player.onGround && timestamp - player.lastFrameTime > 200) {
+                player.runFrame = 1 - player.runFrame;
+                player.lastFrameTime = timestamp;
+            }
+
+            // Генерация препятствий
+            if (timestamp > nextObstacleTime) {
+                obstacles.push(createObstacle());
+                nextObstacleTime = timestamp + 1500 - score / 50;
+            }
+
+            // Обновление препятствий
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                obs.x -= 5;
+
+                // Проход
+                if (!obs.passed && obs.x + obs.width < player.x) {
+                    obs.passed = true;
+                    score += 10;
+                    document.getElementById('score').textContent = score;
+                }
+
+                // Удаление
+                if (obs.x + obs.width < 0) {
+                    obstacles.splice(i, 1);
+                    continue;
+                }
+
+                // Столкновение
+                if (
+                    player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y
+                ) {
+                    lives--;
+                    document.getElementById('lives').textContent = lives;
+                    if (lives <= 0) {
+                        gameOver = true;
+                        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                        ctx.fillRect(0, 0, 800, 400);
+                        ctx.fillStyle = 'white';
+                        ctx.font = '30px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('Игра окончена!', 400, 200);
+                        ctx.fillText('Счёт: ' + score, 400, 250);
+                    }
+                    obstacles.splice(i, 1);
+                }
+
+                // Отрисовка препятствия
+                ctx.fillStyle = '#E91E63';
+                ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+            }
+
+            // Отрисовка гнома
+            drawGnome();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Старт
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
